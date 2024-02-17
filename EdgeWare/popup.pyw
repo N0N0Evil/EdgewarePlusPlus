@@ -143,7 +143,7 @@ MOOD_OFF = True
 MOOD_FILENAME = True
 MULTI_CLICK = False
 THEME = 'Original'
-
+LOOP = False
 with open(PATH + '\\config.cfg', 'r') as cfg:
     settings = json.loads(cfg.read())
     SHOW_CAPTIONS = check_setting('showCaptions')
@@ -362,6 +362,22 @@ class VideoLabel(tk.Label):
                 self.image = self.video_frame_image
                 self.time_offset_end = time.perf_counter()
                 time.sleep(max(0, self.delay - (self.time_offset_end - self.time_offset_start)))
+    def play_no_loop(self):
+        from types import NoneType
+        if not isinstance(self.audio_track, NoneType):
+            try:
+                import sounddevice
+                sounddevice.play(self.audio_track, samplerate=len(self.audio_track) / self.duration, loop=True)
+            except Exception as e:
+                print(f'failed to play sound, reason:\n\t{e}')
+        for frame in self.video_frames.iter_data():
+            self.time_offset_start = time.perf_counter()
+            self.video_frame_image = ImageTk.PhotoImage(Image.fromarray(frame).resize((self.wid, self.hgt)))
+            self.config(image=self.video_frame_image)
+            self.image = self.video_frame_image
+            self.time_offset_end = time.perf_counter()
+            time.sleep(max(0, self.delay - (self.time_offset_end - self.time_offset_start)))
+        die()
 
 def pick_resource(basepath, vidYes:bool):
     if MOOD_ID != '0' and os.path.exists(os.path.join(PATH, 'resource', 'media.json')):
@@ -455,6 +471,7 @@ if THEME == 'Bimbo':
     mainfont.configure(family='Constantia')
 
 def run():
+    from videoprops import get_video_properties
     #var things
     video_mode = False
     resource_path = f'{os.path.abspath(os.getcwd())}\\resource\\img\\'
@@ -472,7 +489,7 @@ def run():
             except:
                 item, caption_text, root.click_count = pick_resource(resource_path, video_mode)
     else:
-        from videoprops import get_video_properties
+        
         video_path = os.path.join(PATH, 'resource', 'vid', item)
         video_properties = get_video_properties(video_path)
         image = Image.new('RGB', (video_properties['width'], video_properties['height']))
@@ -531,13 +548,32 @@ def run():
             #vlc mode
             label = Label(root, width=resized_image.width, height=resized_image.height)
             label.pack()
-            startVLC(video_path, label)
+            if LOOP:
+                startVLC(video_path, label)
+            else:
+                try:
+                    props = get_video_properties(video_path)
+                except:
+                    startVLC_no_loop(video_path, label, 30)
+                try: 
+                    duration = float(props['duration'])
+                except:
+                    from datetime import datetime
+                    time_str = props['tags']['DURATION'][0:10]
+
+                    temp = datetime.strptime(time_str, '%H:%M:%S.%f')
+                    duration = (temp.hour * 3600) + (temp.minute * 60) + temp.second + temp.microsecond/ 1e6 + 1
+                startVLC_no_loop(video_path, label, duration)
+                
         else:
             #video mode
             label = VideoLabel(root)
             label.load(path = video_path, resized_width = resized_image.width, resized_height = resized_image.height)
             label.pack()
-            thread.Thread(target=lambda: label.play(), daemon=True).start()
+            if LOOP:
+                thread.Thread(target=lambda: label.play(), daemon=True).start()
+            else: 
+                thread.Thread(target=lambda: label.play_no_loop(), daemon=True).start()
     elif animated_gif:
         #gif mode
         label = GifLabel(root)
@@ -602,8 +638,12 @@ def run():
     if animated_gif:
         label.next_frame()
 
-    if HAS_LIFESPAN or LOWKEY_MODE and not (HIBERNATE_TYPE == 'Pump-Scare' and HIBERNATE_MODE):
-        thread.Thread(target=lambda: live_life(root, LIFESPAN if not LOWKEY_MODE else DELAY / 1000), daemon=True).start()
+    if HAS_LIFESPAN or LOWKEY_MODE :
+        try:
+            if not (HIBERNATE_TYPE == 'Pump-Scare' and HIBERNATE_MODE):
+                thread.Thread(target=lambda: live_life(root, LIFESPAN ), daemon=True).start()
+        except:
+            thread.Thread(target=lambda: live_life(root,  DELAY / 1000), daemon=True).start()
 
     if not MULTI_CLICK:
         root.click_count = 1
@@ -638,7 +678,9 @@ def run():
 def startVLC(vid, label):
     #word of advice: if you go messing around with python-vlc there's almost no documentation for it
     #this is a hack that will repeat the video 999,999 times, because I tried to find something less terrible for hours but couldn't
+    
     instance = vlc.Instance('--input-repeat=999999')
+
     media_player = instance.media_player_new()
     media_player.set_hwnd(label.winfo_id())
     media_player.video_set_mouse_input(False)
@@ -648,6 +690,26 @@ def startVLC(vid, label):
     media = instance.media_new(vid)
     media_player.set_media(media)
     media_player.play()
+def startVLC_no_loop(vid, label, duration):
+    from threading import Timer
+    import threading
+    #word of advice: if you go messing around with python-vlc there's almost no documentation for it
+    #this is a hack that will repeat the video 999,999 times, because I tried to find something less terrible for hours but couldn't
+    
+    instance = vlc.Instance('--input-repeat=1')
+
+    media_player = instance.media_player_new()
+    media_player.set_hwnd(label.winfo_id())
+    media_player.video_set_mouse_input(False)
+    media_player.video_set_key_input(False)
+    media_player.audio_set_volume(int(VIDEO_VOLUME*100))
+
+    media = instance.media_new(vid)
+    media_player.set_media(media)
+    media_player.play()
+    t = threading.Timer(duration, die)
+    t.start()
+
 
 def check_deny() -> bool:
     return DENIAL_MODE and rand.randint(1, 100) <= DENIAL_CHANCE
@@ -829,4 +891,5 @@ if __name__ == '__main__':
         if not os.path.exists(os.path.join(PATH, 'logs')):
             os.mkdir(os.path.join(PATH, 'logs'))
         logging.basicConfig(filename=os.path.join(PATH, 'logs', time.asctime().replace(' ', '_').replace(':', '-') + '-popup.txt'), format='%(levelname)s:%(message)s', level=logging.DEBUG)
-        logging.fatal(f'failed to start popup\n{e}')
+        logging.fatal(f'failed to start popup\n{e}\n{type(e)}\n{e.args}')
+        print(e)
